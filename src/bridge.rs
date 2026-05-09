@@ -42,6 +42,7 @@ pub struct Playwright {
 impl Playwright {
     pub fn spawn(timeout: u64) -> Result<Self> {
         let bridge_dir = Self::bridge_dir()?;
+        Self::ensure_setup(&bridge_dir)?;
 
         let mut child = Command::new("node")
             .arg("index.mjs")
@@ -81,6 +82,51 @@ impl Playwright {
         }
 
         bail!("cannot find bridge/index.mjs — run from the imoduru project directory");
+    }
+
+    fn ensure_setup(bridge_dir: &str) -> Result<()> {
+        let node_modules = std::path::Path::new(bridge_dir).join("node_modules");
+        if !node_modules.exists() {
+            eprintln!("[imoduru] bridge/node_modules not found — running npm install...");
+            let status = Command::new("npm")
+                .args(["install", "--production"])
+                .current_dir(bridge_dir)
+                .status()
+                .context("failed to run npm install (is npm installed?)")?;
+            if !status.success() {
+                bail!("npm install failed");
+            }
+        }
+
+        // Check if Playwright browsers are installed by looking for the marker
+        let home = std::env::var("HOME").unwrap_or_default();
+        let pw_cache = if cfg!(target_os = "macos") {
+            format!("{home}/Library/Caches/ms-playwright")
+        } else {
+            format!("{home}/.cache/ms-playwright")
+        };
+        let has_chromium = std::path::Path::new(&pw_cache)
+            .read_dir()
+            .ok()
+            .map(|mut d| d.any(|e| {
+                e.ok()
+                    .map(|e| e.file_name().to_string_lossy().contains("chromium"))
+                    .unwrap_or(false)
+            }))
+            .unwrap_or(false);
+
+        if !has_chromium {
+            eprintln!("[imoduru] Playwright Chromium not found — installing...");
+            let status = Command::new("npx")
+                .args(["playwright", "install", "chromium"])
+                .status()
+                .context("failed to run npx playwright install")?;
+            if !status.success() {
+                bail!("playwright install chromium failed");
+            }
+        }
+
+        Ok(())
     }
 
     fn send(&mut self, req: &Request) -> Result<()> {
