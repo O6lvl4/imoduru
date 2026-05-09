@@ -280,6 +280,7 @@ async function createContext() {
     locale: fp.languages[0] || "ja-JP",
     timezoneId: "Asia/Tokyo",
     ignoreHTTPSErrors: true,
+    acceptDownloads: true,
     extraHTTPHeaders: {
       "Accept-Language": fp.languages.join(","),
     },
@@ -369,6 +370,35 @@ async function handleFetch(id, params) {
   }
 }
 
+// ── Binary fetch (for PDFs etc.) ──────────────────────────────────
+// Uses native fetch() — no Playwright page overhead needed for static files.
+
+async function handleFetchBinary(id, params) {
+  try {
+    const timeout = params.timeout ?? 30000;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+
+    const resp = await fetch(params.url, {
+      signal: controller.signal,
+      headers: { "User-Agent": FINGERPRINTS[0].userAgent },
+    });
+    clearTimeout(timer);
+
+    if (!resp.ok) {
+      reply({ id, ok: false, error: `HTTP ${resp.status}` });
+      return;
+    }
+
+    const buf = Buffer.from(await resp.arrayBuffer());
+    const base64 = buf.toString("base64");
+    const contentType = resp.headers.get("content-type") || "";
+    reply({ id, ok: true, data: base64, status: resp.status, content_type: contentType, url: params.url });
+  } catch (err) {
+    reply({ id, ok: false, error: err.message });
+  }
+}
+
 // ── Startup ───────────────────────────────────────────────────────
 
 await createBrowser();
@@ -396,6 +426,11 @@ rl.on("line", async (line) => {
 
   if (req.method === "fetch") {
     await handleFetch(req.id, req.params ?? {});
+    return;
+  }
+
+  if (req.method === "fetch_binary") {
+    await handleFetchBinary(req.id, req.params ?? {});
     return;
   }
 

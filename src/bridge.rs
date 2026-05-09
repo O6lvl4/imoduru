@@ -20,6 +20,8 @@ pub struct Response {
     pub id: Option<u64>,
     pub ok: bool,
     pub html: Option<String>,
+    /// Base64-encoded binary data (for fetch_binary).
+    pub data: Option<String>,
     #[allow(dead_code)]
     pub url: Option<String>,
     pub status: Option<u16>,
@@ -96,7 +98,6 @@ impl Playwright {
         Ok(resp)
     }
 
-    /// Configure stealth mode, proxy, and fingerprint rotation.
     pub fn configure(
         &mut self,
         stealth: bool,
@@ -162,6 +163,32 @@ impl Playwright {
             );
         }
         Ok(resp)
+    }
+
+    /// Fetch a binary resource (PDF, image, etc.) and return base64-encoded data.
+    pub fn fetch_binary(&mut self, url: &str) -> Result<Vec<u8>> {
+        use base64::Engine;
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let req = Request {
+            id,
+            method: "fetch_binary".into(),
+            params: Some(serde_json::json!({
+                "url": url,
+                "timeout": self.timeout,
+            })),
+        };
+        self.send(&req)?;
+        let resp = self.read_response()?;
+        if !resp.ok {
+            bail!(
+                "fetch_binary failed for {}: {}",
+                url,
+                resp.error.as_deref().unwrap_or("unknown error")
+            );
+        }
+        let b64 = resp.data.ok_or_else(|| anyhow::anyhow!("no data in response"))?;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(&b64)?;
+        Ok(bytes)
     }
 
     pub fn shutdown(&mut self) -> Result<()> {

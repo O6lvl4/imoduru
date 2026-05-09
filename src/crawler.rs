@@ -28,6 +28,10 @@ pub struct CrawlConfig {
     pub checkpoint_path: Option<String>,
     /// Checkpoint save interval (number of BFS levels).
     pub checkpoint_interval: usize,
+    /// Download and extract text from linked PDFs.
+    pub fetch_pdfs: bool,
+    /// Directory to save raw PDF files (None = don't save).
+    pub pdf_dir: Option<String>,
 }
 
 impl Default for CrawlConfig {
@@ -41,6 +45,8 @@ impl Default for CrawlConfig {
             timeout_ms: 30_000,
             checkpoint_path: None,
             checkpoint_interval: 1,
+            fetch_pdfs: false,
+            pdf_dir: None,
         }
     }
 }
@@ -257,6 +263,7 @@ pub fn crawl(
                         status: *status,
                         links: links.iter().map(|u| u.to_string()).collect(),
                         pdf_links: pdf_links.iter().map(|u| u.to_string()).collect(),
+                        pdfs: Vec::new(),
                     };
 
                     pages.lock().unwrap().push(page);
@@ -309,9 +316,104 @@ pub fn crawl(
         }
     }
 
+    // -- PDF fetch phase
+    let mut pages = pages.into_inner().unwrap();
+
+    if config.fetch_pdfs {
+        // Collect all unique PDF URLs across all pages
+        let mut pdf_urls: Vec<String> = pages
+            .iter()
+            .flat_map(|p| p.pdf_links.iter().cloned())
+            .collect();
+        pdf_urls.sort();
+        pdf_urls.dedup();
+
+        if !pdf_urls.is_empty() {
+            eprintln!("[imoduru] fetching {} PDFs", pdf_urls.len());
+
+            if let Some(ref dir) = config.pdf_dir {
+                std::fs::create_dir_all(dir)?;
+            }
+
+            let mut pdf_map: std::collections::HashMap<String, crate::store::PdfContent> =
+                std::collections::HashMap::new();
+
+            for pdf_url in &pdf_urls {
+                // Rate limit
+                let elapsed = last_fetch.elapsed();
+                if elapsed < rate_delay {
+                    std::thread::sleep(rate_delay - elapsed);
+                }
+
+                match pw.fetch_binary(pdf_url) {
+                    Ok(bytes) => {
+                        let size = bytes.len();
+                        eprintln!("  [PDF] {} ({} bytes)", pdf_url, size);
+
+                        // Save raw PDF if requested
+                        if let Some(ref dir) = config.pdf_dir {
+                            let filename = pdf_url
+                                .rsplit('/')
+                                .next()
+                                .unwrap_or("unknown.pdf")
+                                .to_string();
+                            let path = format!("{dir}/{filename}");
+                            let _ = std::fs::write(&path, &bytes);
+                        }
+
+                        // Extract text (catch_unwind: pdf-extract panics on some Japanese PDFs)
+                        let bytes_clone = bytes.clone();
+                        let text = match std::panic::catch_unwind(|| {
+                            pdf_extract::extract_text_from_mem(&bytes_clone)
+                        }) {
+                            Ok(Ok(t)) => t.trim().to_string(),
+                            Ok(Err(e)) => {
+                                eprintln!("  [PDF-ERR] extraction failed for {pdf_url}: {e}");
+                                String::new()
+                            }
+                            Err(_) => {
+                                eprintln!("  [PDF-ERR] extraction panicked for {pdf_url} (likely CJK font)");
+                                String::new()
+                            }
+                        };
+
+                        if !text.is_empty() {
+                            eprintln!("    extracted {} chars", text.len());
+                        }
+
+                        last_fetch = Instant::now();
+                        pdf_map.insert(
+                            pdf_url.clone(),
+                            crate::store::PdfContent {
+                                url: pdf_url.clone(),
+                                text,
+                                bytes: size,
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        eprintln!("  [PDF-FAIL] {} — {e}", pdf_url);
+                    }
+                }
+            }
+
+            // Attach PDF contents to their parent pages
+            for page in &mut pages {
+                for pdf_url in &page.pdf_links {
+                    if let Some(pdf) = pdf_map.get(pdf_url) {
+                        page.pdfs.push(pdf.clone());
+                    }
+                }
+            }
+
+            eprintln!("[imoduru] PDFs: {} fetched, {} extracted text",
+                pdf_map.len(),
+                pdf_map.values().filter(|p| !p.text.is_empty()).count());
+        }
+    }
+
     stats.elapsed_ms = start_time.elapsed().as_millis() as u64;
 
-    let mut pages = pages.into_inner().unwrap();
     pages.sort_by(|a, b| a.url.cmp(&b.url));
 
     // Clean up checkpoint on successful completion

@@ -17,3 +17,5 @@ chrono = { version = "0.4", features = ["serde"] }
 rusqlite = { version = "0.34", features = ["bundled"] }
 strsim = "0.11"
 rand = "0.9"
+pdf-extract = "0.10.0"
+base64 = "0.22"

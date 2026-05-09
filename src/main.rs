@@ -87,6 +87,14 @@ struct CrawlArgs {
     #[arg(long)]
     checkpoint: Option<String>,
 
+    /// Download and extract text from linked PDFs
+    #[arg(long)]
+    pdf: bool,
+
+    /// Directory to save raw PDF files
+    #[arg(long)]
+    pdf_dir: Option<String>,
+
     /// Output file (JSON)
     #[arg(short, long, default_value = "imoduru-out.json")]
     output: String,
@@ -176,6 +184,8 @@ fn run_crawl(args: CrawlArgs) -> Result<()> {
         obey_robots: !args.ignore_robots,
         timeout_ms: args.timeout,
         checkpoint_path: args.checkpoint,
+        fetch_pdfs: args.pdf || args.pdf_dir.is_some(),
+        pdf_dir: args.pdf_dir,
         ..Default::default()
     };
 
@@ -195,9 +205,14 @@ fn run_crawl(args: CrawlArgs) -> Result<()> {
     eprintln!("  bytes:   {}", format_bytes(result.stats.total_bytes));
     eprintln!("  time:    {:.1}s", result.stats.elapsed_ms as f64 / 1000.0);
     if !result.pages.is_empty() {
-        let pdf_count: usize = result.pages.iter().map(|p| p.pdf_links.len()).sum();
-        if pdf_count > 0 {
-            eprintln!("  PDFs:    {} links found", pdf_count);
+        let pdf_link_count: usize = result.pages.iter().map(|p| p.pdf_links.len()).sum();
+        let pdf_fetched: usize = result.pages.iter().map(|p| p.pdfs.len()).sum();
+        let pdf_text_chars: usize = result.pages.iter().flat_map(|p| &p.pdfs).map(|pdf| pdf.text.len()).sum();
+        if pdf_link_count > 0 {
+            eprintln!("  PDFs:    {} links found", pdf_link_count);
+            if pdf_fetched > 0 {
+                eprintln!("  PDFs:    {} fetched, {} chars extracted", pdf_fetched, pdf_text_chars);
+            }
         }
     }
 

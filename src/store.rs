@@ -2,6 +2,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PdfContent {
+    pub url: String,
+    pub text: String,
+    pub bytes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Page {
     pub url: String,
     pub title: Option<String>,
@@ -11,6 +18,8 @@ pub struct Page {
     pub status: u16,
     pub links: Vec<String>,
     pub pdf_links: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pdfs: Vec<PdfContent>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
