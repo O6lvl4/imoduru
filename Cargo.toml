@@ -1,0 +1,15 @@
+[package]
+name = "imoduru"
+version = "0.1.0"
+edition = "2021"
+description = "Recursive web crawler powered by Playwright + Rust parallelism"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+rayon = "1"
+scraper = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = { version = "2", features = ["serde"] }
+crossbeam-channel = "0.5"
