@@ -4,6 +4,15 @@ Recursive web crawler that pulls everything like a sweet potato vine.
 
 Rust + Playwright. Give it a URL, it follows every link under the same path, extracts text from HTML and PDFs, and serves it all via MCP so AI agents can answer questions from the collected data.
 
+## Requirements
+
+- **Rust** 1.70+ (`rustup` recommended)
+- **Node.js** 18+ (for Playwright bridge)
+- **npm** 8+
+- **C compiler** (for SQLite bundled build — Xcode CLT on macOS, `build-essential` on Linux)
+
+Playwright downloads Chromium automatically via `npx playwright install chromium`.
+
 ## Install
 
 ```bash
