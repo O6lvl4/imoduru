@@ -90,6 +90,11 @@ fn tool_definitions() -> Value {
                             "type": "boolean",
                             "description": "Enable stealth mode for anti-bot bypass",
                             "default": false
+                        },
+                        "fetch_pdfs": {
+                            "type": "boolean",
+                            "description": "Download linked PDFs and extract their text content",
+                            "default": false
                         }
                     },
                     "required": ["url"]
@@ -148,6 +153,7 @@ fn handle_crawl(state: &Mutex<State>, params: &Value) -> Result<Value> {
         .ok_or_else(|| anyhow::anyhow!("missing 'url' parameter"))?;
     let depth = params["depth"].as_u64().unwrap_or(2) as usize;
     let stealth = params["stealth"].as_bool().unwrap_or(false);
+    let fetch_pdfs = params["fetch_pdfs"].as_bool().unwrap_or(false);
 
     let seed = url::Url::parse(url_str)?;
     let prefix = params["prefix"]
@@ -171,6 +177,7 @@ fn handle_crawl(state: &Mutex<State>, params: &Value) -> Result<Value> {
         rate_limit_ms: 500,
         max_retries: 2,
         obey_robots: true,
+        fetch_pdfs,
         ..Default::default()
     };
 
@@ -187,13 +194,23 @@ fn handle_crawl(state: &Mutex<State>, params: &Value) -> Result<Value> {
         "pages_failed": result.stats.pages_failed,
         "total_bytes": result.stats.total_bytes,
         "elapsed_ms": result.stats.elapsed_ms,
-        "pages": result.pages.iter().map(|p| json!({
-            "url": p.url,
-            "title": p.title,
-            "text": p.text,
-            "pdf_links": p.pdf_links,
-            "depth": p.depth,
-        })).collect::<Vec<_>>(),
+        "pages": result.pages.iter().map(|p| {
+            let mut page = json!({
+                "url": p.url,
+                "title": p.title,
+                "text": p.text,
+                "pdf_links": p.pdf_links,
+                "depth": p.depth,
+            });
+            if !p.pdfs.is_empty() {
+                page["pdfs"] = json!(p.pdfs.iter().map(|pdf| json!({
+                    "url": pdf.url,
+                    "text": pdf.text,
+                    "bytes": pdf.bytes,
+                })).collect::<Vec<_>>());
+            }
+            page
+        }).collect::<Vec<_>>(),
     });
 
     let key = format!("{}|{}", seed.origin().ascii_serialization(), prefix);
@@ -217,16 +234,29 @@ fn handle_query(state: &Mutex<State>, params: &Value) -> Result<Value> {
             if !url_filter.is_empty() && !page.url.contains(url_filter) {
                 continue;
             }
+            // Search in page text
             let text_lower = page.text.to_lowercase();
             if text_lower.contains(&keyword) {
-                // Extract excerpt around first match
                 let excerpt = extract_excerpt(&page.text, &keyword, 200);
                 matches.push(json!({
                     "url": page.url,
                     "title": page.title,
+                    "source": "html",
                     "excerpt": excerpt,
-                    "pdf_links": page.pdf_links,
                 }));
+            }
+            // Search in attached PDF texts
+            for pdf in &page.pdfs {
+                let pdf_lower = pdf.text.to_lowercase();
+                if pdf_lower.contains(&keyword) {
+                    let excerpt = extract_excerpt(&pdf.text, &keyword, 200);
+                    matches.push(json!({
+                        "url": pdf.url,
+                        "title": page.title,
+                        "source": "pdf",
+                        "excerpt": excerpt,
+                    }));
+                }
             }
         }
     }
