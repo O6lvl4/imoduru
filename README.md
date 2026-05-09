@@ -2,7 +2,7 @@
 
 Recursive web crawler that pulls everything like a sweet potato vine.
 
-Rust + Playwright. Crawl a URL, follow all links under the same path, extract text from HTML and PDFs, then serve it all via MCP for AI agents to answer questions.
+Rust + Playwright. Give it a URL, it follows every link under the same path, extracts text from HTML and PDFs, and serves it all via MCP so AI agents can answer questions from the collected data.
 
 ## Install
 
@@ -22,7 +22,7 @@ npx playwright install chromium
 # Basic crawl
 imoduru crawl "https://example.com/docs/" --depth 2
 
-# With PDF extraction
+# With PDF text extraction
 imoduru crawl "https://example.com/docs/" --depth 2 --pdf
 
 # Save raw PDFs to disk
@@ -129,19 +129,13 @@ When `--stealth` is enabled:
 
 With `--fingerprint rotate`, each request uses a different browser profile (Chrome/Edge on Mac/Win/Linux).
 
-## Example: Miyazaki City trash disposal help desk
+## Use cases
 
-```bash
-# Crawl all pages + PDFs about bringing trash to the facility
-imoduru crawl "https://www.city.miyazaki.miyazaki.jp/life/trash/bring/" \
-  --depth 1 --pdf --rate-limit 300
-
-# Result: 10 HTML pages + 14 PDFs → ~75K chars of structured knowledge
-# Including: waste acceptance criteria (A-Z), opening calendar,
-# fee structure, pet cremation rules, traffic access
-```
-
-Connect via MCP and ask: "布団は持ち込めますか？" → Agent searches the crawled data and answers with citations.
+- **Help desk agent**: Crawl an organization's website, then answer questions via MCP with source citations
+- **Documentation indexing**: Pull all pages under `/docs/` and make them searchable
+- **Research**: Collect and structure information from multiple pages + linked PDFs
+- **Competitive analysis**: Crawl product pages, pricing, specs
+- **Archival**: Snapshot a site section with full text + PDF preservation
 
 ## License
 
