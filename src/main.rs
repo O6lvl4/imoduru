@@ -1,6 +1,8 @@
+mod adaptive;
 mod bridge;
 mod crawler;
 mod extract;
+mod proxy;
 mod robots;
 mod store;
 
@@ -42,6 +44,26 @@ struct Cli {
     #[arg(short, long, default_value_t = 30000)]
     timeout: u64,
 
+    /// Enable stealth mode (anti-bot bypass, Cloudflare handling)
+    #[arg(short, long)]
+    stealth: bool,
+
+    /// Fingerprint rotation mode: "default" or "rotate"
+    #[arg(long, default_value = "default")]
+    fingerprint: String,
+
+    /// Proxy URL (e.g., http://host:port or http://user:pass@host:port)
+    #[arg(long)]
+    proxy: Option<String>,
+
+    /// Proxy list file (one proxy per line, rotates per-request)
+    #[arg(long)]
+    proxy_file: Option<String>,
+
+    /// Adaptive selector database path
+    #[arg(long)]
+    adaptive_db: Option<String>,
+
     /// Checkpoint file for resume support
     #[arg(long)]
     checkpoint: Option<String>,
@@ -71,15 +93,50 @@ fn main() -> Result<()> {
         }
     });
 
-    eprintln!("[imoduru] seed:       {seed}");
-    eprintln!("[imoduru] prefix:     {prefix}");
-    eprintln!("[imoduru] depth:      {}", cli.depth);
-    eprintln!("[imoduru] workers:    {}", cli.workers);
-    eprintln!("[imoduru] rate_limit: {}ms", cli.rate_limit);
-    eprintln!("[imoduru] robots:     {}", if cli.ignore_robots { "ignored" } else { "obeyed" });
+    eprintln!("[imoduru] seed:        {seed}");
+    eprintln!("[imoduru] prefix:      {prefix}");
+    eprintln!("[imoduru] depth:       {}", cli.depth);
+    eprintln!("[imoduru] workers:     {}", cli.workers);
+    eprintln!("[imoduru] rate_limit:  {}ms", cli.rate_limit);
+    eprintln!("[imoduru] robots:      {}", if cli.ignore_robots { "ignored" } else { "obeyed" });
+    eprintln!("[imoduru] stealth:     {}", cli.stealth);
+    eprintln!("[imoduru] fingerprint: {}", cli.fingerprint);
 
     let mut pw = bridge::Playwright::spawn(cli.timeout)?;
     eprintln!("[imoduru] playwright bridge ready");
+
+    // -- Proxy setup
+    let proxy_rotator = if let Some(ref proxy_file) = cli.proxy_file {
+        let proxies = proxy::load_proxy_file(proxy_file)?;
+        eprintln!("[imoduru] loaded {} proxies from {}", proxies.len(), proxy_file);
+        Some(proxy::ProxyRotator::new(proxies))
+    } else if let Some(ref proxy_url) = cli.proxy {
+        eprintln!("[imoduru] proxy: {proxy_url}");
+        Some(proxy::ProxyRotator::new(vec![proxy_url.clone()]))
+    } else {
+        None
+    };
+
+    // -- Configure bridge (stealth, fingerprint, proxy)
+    let proxy_json = proxy_rotator.as_ref().and_then(|r| {
+        r.next().map(|p| p.to_bridge_json())
+    });
+
+    if cli.stealth || proxy_json.is_some() || cli.fingerprint != "default" {
+        pw.configure(cli.stealth, &cli.fingerprint, proxy_json)?;
+        eprintln!("[imoduru] bridge configured (stealth={}, fp={}, proxy={})",
+            cli.stealth, cli.fingerprint,
+            proxy_rotator.as_ref().map(|r| format!("{} proxies", r.len())).unwrap_or_else(|| "none".into()));
+    }
+
+    // -- Adaptive selector store
+    let _adaptive_store = if let Some(ref db_path) = cli.adaptive_db {
+        let store = adaptive::AdaptiveStore::open(db_path)?;
+        eprintln!("[imoduru] adaptive store: {db_path}");
+        Some(store)
+    } else {
+        None
+    };
 
     let config = CrawlConfig {
         max_depth: cli.depth,

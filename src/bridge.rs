@@ -11,20 +11,7 @@ struct Request {
     id: u64,
     method: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    params: Option<FetchParams>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct FetchParams {
-    pub url: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub wait_until: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub wait_for: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub delay: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub timeout: Option<u64>,
+    params: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -39,6 +26,8 @@ pub struct Response {
     pub error: Option<String>,
     #[serde(default)]
     pub ready: bool,
+    #[serde(default)]
+    pub configured: bool,
 }
 
 pub struct Playwright {
@@ -92,7 +81,7 @@ impl Playwright {
         bail!("cannot find bridge/index.mjs — run from the imoduru project directory");
     }
 
-    fn send_request(&mut self, req: &Request) -> Result<()> {
+    fn send(&mut self, req: &Request) -> Result<()> {
         let line = serde_json::to_string(req)?;
         writeln!(self.stdin, "{line}")?;
         self.stdin.flush()?;
@@ -107,6 +96,36 @@ impl Playwright {
         Ok(resp)
     }
 
+    /// Configure stealth mode, proxy, and fingerprint rotation.
+    pub fn configure(
+        &mut self,
+        stealth: bool,
+        fingerprint: &str,
+        proxy: Option<serde_json::Value>,
+    ) -> Result<()> {
+        let mut params = serde_json::json!({
+            "stealth": stealth,
+            "fingerprint": fingerprint,
+        });
+        if let Some(p) = proxy {
+            params["proxy"] = p;
+        }
+        let req = Request {
+            id: 0,
+            method: "configure".into(),
+            params: Some(params),
+        };
+        self.send(&req)?;
+        let resp = self.read_response()?;
+        if !resp.ok {
+            bail!(
+                "configure failed: {}",
+                resp.error.as_deref().unwrap_or("unknown")
+            );
+        }
+        Ok(())
+    }
+
     pub fn fetch(&mut self, url: &str) -> Result<Response> {
         self.fetch_with(url, None, None)
     }
@@ -118,18 +137,22 @@ impl Playwright {
         delay: Option<u64>,
     ) -> Result<Response> {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let mut params = serde_json::json!({
+            "url": url,
+            "timeout": self.timeout,
+        });
+        if let Some(wf) = wait_for {
+            params["wait_for"] = serde_json::json!(wf);
+        }
+        if let Some(d) = delay {
+            params["delay"] = serde_json::json!(d);
+        }
         let req = Request {
             id,
             method: "fetch".into(),
-            params: Some(FetchParams {
-                url: url.to_string(),
-                wait_until: None,
-                wait_for: wait_for.map(|s| s.to_string()),
-                delay,
-                timeout: Some(self.timeout),
-            }),
+            params: Some(params),
         };
-        self.send_request(&req)?;
+        self.send(&req)?;
         let resp = self.read_response()?;
         if !resp.ok {
             bail!(
@@ -147,7 +170,7 @@ impl Playwright {
             method: "shutdown".into(),
             params: None,
         };
-        let _ = self.send_request(&req);
+        let _ = self.send(&req);
         let _ = self.child.wait();
         Ok(())
     }
