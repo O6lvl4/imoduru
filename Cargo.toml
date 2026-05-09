@@ -1,6 +1,6 @@
 [package]
 name = "imoduru"
-version = "0.3.0"
+version = "0.5.0"
 edition = "2021"
 description = "Recursive web crawler — pull everything like a sweet potato vine. Rust + Playwright."
 

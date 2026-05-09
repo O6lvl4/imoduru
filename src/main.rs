@@ -1,8 +1,10 @@
+#[allow(dead_code)]
 mod adaptive;
 mod bridge;
 mod crawler;
 mod extract;
 mod mcp;
+#[allow(dead_code)]
 mod proxy;
 mod robots;
 mod store;
@@ -12,7 +14,11 @@ use clap::{Parser, Subcommand};
 use crawler::CrawlConfig;
 
 #[derive(Parser)]
-#[command(name = "imoduru", version, about = "Recursive web crawler — pull everything like a sweet potato vine")]
+#[command(
+    name = "imoduru",
+    version,
+    about = "Recursive web crawler — pull everything like a sweet potato vine"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -21,7 +27,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Crawl a URL recursively
-    Crawl(CrawlArgs),
+    Crawl(Box<CrawlArgs>),
     /// Start MCP server (JSON-RPC over stdio)
     Mcp {
         /// Request timeout (ms)
@@ -108,7 +114,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Crawl(args) => run_crawl(args),
+        Commands::Crawl(args) => run_crawl(*args),
         Commands::Mcp { timeout } => mcp::run_mcp_server(timeout),
     }
 }
@@ -132,7 +138,14 @@ fn run_crawl(args: CrawlArgs) -> Result<()> {
     eprintln!("[imoduru] depth:       {}", args.depth);
     eprintln!("[imoduru] workers:     {}", args.workers);
     eprintln!("[imoduru] rate_limit:  {}ms", args.rate_limit);
-    eprintln!("[imoduru] robots:      {}", if args.ignore_robots { "ignored" } else { "obeyed" });
+    eprintln!(
+        "[imoduru] robots:      {}",
+        if args.ignore_robots {
+            "ignored"
+        } else {
+            "obeyed"
+        }
+    );
     eprintln!("[imoduru] stealth:     {}", args.stealth);
     eprintln!("[imoduru] fingerprint: {}", args.fingerprint);
 
@@ -142,7 +155,11 @@ fn run_crawl(args: CrawlArgs) -> Result<()> {
     // Proxy setup
     let proxy_rotator = if let Some(ref proxy_file) = args.proxy_file {
         let proxies = proxy::load_proxy_file(proxy_file)?;
-        eprintln!("[imoduru] loaded {} proxies from {}", proxies.len(), proxy_file);
+        eprintln!(
+            "[imoduru] loaded {} proxies from {}",
+            proxies.len(),
+            proxy_file
+        );
         Some(proxy::ProxyRotator::new(proxies))
     } else if let Some(ref proxy_url) = args.proxy {
         eprintln!("[imoduru] proxy: {proxy_url}");
@@ -207,11 +224,19 @@ fn run_crawl(args: CrawlArgs) -> Result<()> {
     if !result.pages.is_empty() {
         let pdf_link_count: usize = result.pages.iter().map(|p| p.pdf_links.len()).sum();
         let pdf_fetched: usize = result.pages.iter().map(|p| p.pdfs.len()).sum();
-        let pdf_text_chars: usize = result.pages.iter().flat_map(|p| &p.pdfs).map(|pdf| pdf.text.len()).sum();
+        let pdf_text_chars: usize = result
+            .pages
+            .iter()
+            .flat_map(|p| &p.pdfs)
+            .map(|pdf| pdf.text.len())
+            .sum();
         if pdf_link_count > 0 {
             eprintln!("  PDFs:    {} links found", pdf_link_count);
             if pdf_fetched > 0 {
-                eprintln!("  PDFs:    {} fetched, {} chars extracted", pdf_fetched, pdf_text_chars);
+                eprintln!(
+                    "  PDFs:    {} fetched, {} chars extracted",
+                    pdf_fetched, pdf_text_chars
+                );
             }
         }
     }

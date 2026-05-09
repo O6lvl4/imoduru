@@ -86,7 +86,12 @@ fn normalize_identifier(id: &str) -> String {
 pub fn element_to_data(el: ElementRef) -> ElementData {
     let tag = el.value().name().to_string();
     let text: String = el.text().collect::<Vec<_>>().join(" ");
-    let text = text.chars().take(500).collect::<String>().trim().to_string();
+    let text = text
+        .chars()
+        .take(500)
+        .collect::<String>()
+        .trim()
+        .to_string();
 
     let mut attributes = HashMap::new();
     for (k, v) in el.value().attrs() {
@@ -121,7 +126,7 @@ pub fn element_to_data(el: ElementRef) -> ElementData {
         .parent()
         .map(|p| {
             p.children()
-                .filter_map(|c| ElementRef::wrap(c))
+                .filter_map(ElementRef::wrap)
                 .map(|s| s.value().name().to_string())
                 .collect()
         })
@@ -188,7 +193,11 @@ pub fn similarity_score(original: &ElementData, candidate: &ElementData) -> f64 
     // 4. Key attribute matching (class, id, href, src)
     for key in &["class", "id", "href", "src"] {
         if let Some(orig_val) = original.attributes.get(*key) {
-            let cand_val = candidate.attributes.get(*key).map(|s| s.as_str()).unwrap_or("");
+            let cand_val = candidate
+                .attributes
+                .get(*key)
+                .map(|s| s.as_str())
+                .unwrap_or("");
             score += strsim::normalized_levenshtein(orig_val, cand_val);
             checks += 1;
         }
@@ -204,7 +213,9 @@ pub fn similarity_score(original: &ElementData, candidate: &ElementData) -> f64 
             score += strsim::normalized_levenshtein(orig_parent, cand_parent);
             checks += 1;
 
-            if let (Some(ref op), Some(ref cp)) = (&original.parent_attribs, &candidate.parent_attribs) {
+            if let (Some(ref op), Some(ref cp)) =
+                (&original.parent_attribs, &candidate.parent_attribs)
+            {
                 score += dict_similarity(op, cp);
                 checks += 1;
             }

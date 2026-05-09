@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
@@ -29,6 +29,7 @@ pub struct Response {
     #[serde(default)]
     pub ready: bool,
     #[serde(default)]
+    #[allow(dead_code)]
     pub configured: bool,
 }
 
@@ -108,11 +109,13 @@ impl Playwright {
         let has_chromium = std::path::Path::new(&pw_cache)
             .read_dir()
             .ok()
-            .map(|mut d| d.any(|e| {
-                e.ok()
-                    .map(|e| e.file_name().to_string_lossy().contains("chromium"))
-                    .unwrap_or(false)
-            }))
+            .map(|mut d| {
+                d.any(|e| {
+                    e.ok()
+                        .map(|e| e.file_name().to_string_lossy().contains("chromium"))
+                        .unwrap_or(false)
+                })
+            })
             .unwrap_or(false);
 
         if !has_chromium {
@@ -232,7 +235,9 @@ impl Playwright {
                 resp.error.as_deref().unwrap_or("unknown error")
             );
         }
-        let b64 = resp.data.ok_or_else(|| anyhow::anyhow!("no data in response"))?;
+        let b64 = resp
+            .data
+            .ok_or_else(|| anyhow::anyhow!("no data in response"))?;
         let bytes = base64::engine::general_purpose::STANDARD.decode(&b64)?;
         Ok(bytes)
     }

@@ -65,8 +65,23 @@ const SKIP_TAGS: &[&str] = &[
 ];
 
 const BLOCK_TAGS: &[&str] = &[
-    "p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "br", "dt", "dd", "th", "td",
-    "section", "blockquote",
+    "p",
+    "div",
+    "li",
+    "tr",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "br",
+    "dt",
+    "dd",
+    "th",
+    "td",
+    "section",
+    "blockquote",
 ];
 
 /// Extract readable text content from HTML, stripping nav/header/footer/script.

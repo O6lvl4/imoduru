@@ -5,8 +5,8 @@ use crate::store::{Checkpoint, CrawlResult, CrawlStats, Page};
 use anyhow::Result;
 use rayon::ThreadPoolBuilder;
 use sha2::{Digest, Sha256};
-use std::collections::{HashSet, BinaryHeap};
 use std::cmp::Ordering as CmpOrd;
+use std::collections::{BinaryHeap, HashSet};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use url::Url;
@@ -128,7 +128,11 @@ pub fn crawl(
     if let Some(ref cp_path) = config.checkpoint_path {
         if let Ok(data) = std::fs::read_to_string(cp_path) {
             if let Ok(cp) = serde_json::from_str::<Checkpoint>(&data) {
-                eprintln!("[imoduru] resuming from checkpoint ({} pages, {} queued)", cp.pages.len(), cp.queue.len());
+                eprintln!(
+                    "[imoduru] resuming from checkpoint ({} pages, {} queued)",
+                    cp.pages.len(),
+                    cp.queue.len()
+                );
                 for url_str in &cp.visited {
                     visited.insert(url_str.clone());
                 }
@@ -192,7 +196,11 @@ pub fn crawl(
             current_level.push(job);
         }
 
-        eprintln!("[imoduru] level {} — {} URLs to fetch", level_count, current_level.len());
+        eprintln!(
+            "[imoduru] level {} — {} URLs to fetch",
+            level_count,
+            current_level.len()
+        );
 
         let mut fetched: Vec<(Job, String, u16)> = Vec::new();
         for job in current_level {
@@ -230,7 +238,10 @@ pub fn crawl(
                     }
                     Err(e) => {
                         if attempts <= config.max_retries {
-                            eprintln!("  [RETRY {}/{}] {} — {e}", attempts, config.max_retries, job.url);
+                            eprintln!(
+                                "  [RETRY {}/{}] {} — {e}",
+                                attempts, config.max_retries, job.url
+                            );
                             std::thread::sleep(Duration::from_millis(1000 * attempts as u64));
                             continue;
                         }
@@ -298,10 +309,8 @@ pub fn crawl(
         // Checkpoint save
         if let Some(ref cp_path) = config.checkpoint_path {
             if level_count % config.checkpoint_interval as u64 == 0 {
-                let queue_snapshot: Vec<(String, usize)> = queue
-                    .iter()
-                    .map(|j| (j.url.to_string(), j.depth))
-                    .collect();
+                let queue_snapshot: Vec<(String, usize)> =
+                    queue.iter().map(|j| (j.url.to_string(), j.depth)).collect();
                 let cp = Checkpoint {
                     visited: visited.iter().cloned().collect(),
                     queue: queue_snapshot,
@@ -406,9 +415,11 @@ pub fn crawl(
                 }
             }
 
-            eprintln!("[imoduru] PDFs: {} fetched, {} extracted text",
+            eprintln!(
+                "[imoduru] PDFs: {} fetched, {} extracted text",
                 pdf_map.len(),
-                pdf_map.values().filter(|p| !p.text.is_empty()).count());
+                pdf_map.values().filter(|p| !p.text.is_empty()).count()
+            );
         }
     }
 

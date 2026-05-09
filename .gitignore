@@ -1,4 +1,10 @@
 target/
 node_modules/
-imoduru-out.json
 bridge/node_modules/
+*.json.tmp
+*.ckpt
+*.db
+
+# runtime outputs
+imoduru-out.json
+mcp-stderr.log
