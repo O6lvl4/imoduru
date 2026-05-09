@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "imoduru": {
+      "command": "cargo",
+      "args": ["run", "--quiet", "--manifest-path", "/Users/o6lvl4/workspace/github.com/O6lvl4/imoduru/Cargo.toml", "--", "mcp"],
+      "env": {}
+    }
+  }
+}

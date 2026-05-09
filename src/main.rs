@@ -2,17 +2,36 @@ mod adaptive;
 mod bridge;
 mod crawler;
 mod extract;
+mod mcp;
 mod proxy;
 mod robots;
 mod store;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use crawler::CrawlConfig;
 
 #[derive(Parser)]
 #[command(name = "imoduru", version, about = "Recursive web crawler — pull everything like a sweet potato vine")]
 struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Crawl a URL recursively
+    Crawl(CrawlArgs),
+    /// Start MCP server (JSON-RPC over stdio)
+    Mcp {
+        /// Request timeout (ms)
+        #[arg(short, long, default_value_t = 30000)]
+        timeout: u64,
+    },
+}
+
+#[derive(Parser)]
+struct CrawlArgs {
     /// Seed URL to start crawling from
     url: String,
 
@@ -80,8 +99,15 @@ struct Cli {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let seed = url::Url::parse(&cli.url)?;
-    let prefix = cli.prefix.unwrap_or_else(|| {
+    match cli.command {
+        Commands::Crawl(args) => run_crawl(args),
+        Commands::Mcp { timeout } => mcp::run_mcp_server(timeout),
+    }
+}
+
+fn run_crawl(args: CrawlArgs) -> Result<()> {
+    let seed = url::Url::parse(&args.url)?;
+    let prefix = args.prefix.unwrap_or_else(|| {
         let p = seed.path().to_string();
         if p.ends_with('/') {
             p
@@ -95,42 +121,46 @@ fn main() -> Result<()> {
 
     eprintln!("[imoduru] seed:        {seed}");
     eprintln!("[imoduru] prefix:      {prefix}");
-    eprintln!("[imoduru] depth:       {}", cli.depth);
-    eprintln!("[imoduru] workers:     {}", cli.workers);
-    eprintln!("[imoduru] rate_limit:  {}ms", cli.rate_limit);
-    eprintln!("[imoduru] robots:      {}", if cli.ignore_robots { "ignored" } else { "obeyed" });
-    eprintln!("[imoduru] stealth:     {}", cli.stealth);
-    eprintln!("[imoduru] fingerprint: {}", cli.fingerprint);
+    eprintln!("[imoduru] depth:       {}", args.depth);
+    eprintln!("[imoduru] workers:     {}", args.workers);
+    eprintln!("[imoduru] rate_limit:  {}ms", args.rate_limit);
+    eprintln!("[imoduru] robots:      {}", if args.ignore_robots { "ignored" } else { "obeyed" });
+    eprintln!("[imoduru] stealth:     {}", args.stealth);
+    eprintln!("[imoduru] fingerprint: {}", args.fingerprint);
 
-    let mut pw = bridge::Playwright::spawn(cli.timeout)?;
+    let mut pw = bridge::Playwright::spawn(args.timeout)?;
     eprintln!("[imoduru] playwright bridge ready");
 
-    // -- Proxy setup
-    let proxy_rotator = if let Some(ref proxy_file) = cli.proxy_file {
+    // Proxy setup
+    let proxy_rotator = if let Some(ref proxy_file) = args.proxy_file {
         let proxies = proxy::load_proxy_file(proxy_file)?;
         eprintln!("[imoduru] loaded {} proxies from {}", proxies.len(), proxy_file);
         Some(proxy::ProxyRotator::new(proxies))
-    } else if let Some(ref proxy_url) = cli.proxy {
+    } else if let Some(ref proxy_url) = args.proxy {
         eprintln!("[imoduru] proxy: {proxy_url}");
         Some(proxy::ProxyRotator::new(vec![proxy_url.clone()]))
     } else {
         None
     };
 
-    // -- Configure bridge (stealth, fingerprint, proxy)
-    let proxy_json = proxy_rotator.as_ref().and_then(|r| {
-        r.next().map(|p| p.to_bridge_json())
-    });
+    let proxy_json = proxy_rotator
+        .as_ref()
+        .and_then(|r| r.next().map(|p| p.to_bridge_json()));
 
-    if cli.stealth || proxy_json.is_some() || cli.fingerprint != "default" {
-        pw.configure(cli.stealth, &cli.fingerprint, proxy_json)?;
-        eprintln!("[imoduru] bridge configured (stealth={}, fp={}, proxy={})",
-            cli.stealth, cli.fingerprint,
-            proxy_rotator.as_ref().map(|r| format!("{} proxies", r.len())).unwrap_or_else(|| "none".into()));
+    if args.stealth || proxy_json.is_some() || args.fingerprint != "default" {
+        pw.configure(args.stealth, &args.fingerprint, proxy_json)?;
+        eprintln!(
+            "[imoduru] bridge configured (stealth={}, fp={}, proxy={})",
+            args.stealth,
+            args.fingerprint,
+            proxy_rotator
+                .as_ref()
+                .map(|r| format!("{} proxies", r.len()))
+                .unwrap_or_else(|| "none".into())
+        );
     }
 
-    // -- Adaptive selector store
-    let _adaptive_store = if let Some(ref db_path) = cli.adaptive_db {
+    let _adaptive_store = if let Some(ref db_path) = args.adaptive_db {
         let store = adaptive::AdaptiveStore::open(db_path)?;
         eprintln!("[imoduru] adaptive store: {db_path}");
         Some(store)
@@ -139,20 +169,19 @@ fn main() -> Result<()> {
     };
 
     let config = CrawlConfig {
-        max_depth: cli.depth,
-        workers: cli.workers,
-        rate_limit_ms: cli.rate_limit,
-        max_retries: cli.max_retries,
-        obey_robots: !cli.ignore_robots,
-        timeout_ms: cli.timeout,
-        checkpoint_path: cli.checkpoint,
+        max_depth: args.depth,
+        workers: args.workers,
+        rate_limit_ms: args.rate_limit,
+        max_retries: args.max_retries,
+        obey_robots: !args.ignore_robots,
+        timeout_ms: args.timeout,
+        checkpoint_path: args.checkpoint,
         ..Default::default()
     };
 
     let mut result = crawler::crawl(&mut pw, &seed, &prefix, &config)?;
 
-    // Strip raw HTML unless --save-html
-    if !cli.save_html {
+    if !args.save_html {
         for page in &mut result.pages {
             page.html.clear();
         }
@@ -173,8 +202,8 @@ fn main() -> Result<()> {
     }
 
     let json = serde_json::to_string_pretty(&result)?;
-    std::fs::write(&cli.output, &json)?;
-    eprintln!("[imoduru] saved to {}", cli.output);
+    std::fs::write(&args.output, &json)?;
+    eprintln!("[imoduru] saved to {}", args.output);
 
     pw.shutdown()?;
     Ok(())
