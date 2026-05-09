@@ -1,63 +1,237 @@
 use crate::bridge::Playwright;
 use crate::extract;
-use crate::store::Page;
+use crate::robots::RobotsManager;
+use crate::store::{Checkpoint, CrawlResult, CrawlStats, Page};
 use anyhow::Result;
 use rayon::ThreadPoolBuilder;
-use std::collections::HashSet;
+use sha2::{Digest, Sha256};
+use std::collections::{HashSet, BinaryHeap};
+use std::cmp::Ordering as CmpOrd;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use url::Url;
 
+/// Crawl configuration.
+pub struct CrawlConfig {
+    pub max_depth: usize,
+    pub workers: usize,
+    /// Minimum delay between requests to the same domain (ms).
+    pub rate_limit_ms: u64,
+    /// Max retries per URL on failure.
+    pub max_retries: u32,
+    /// Respect robots.txt.
+    pub obey_robots: bool,
+    /// Request timeout (ms) — passed through to Playwright bridge.
+    #[allow(dead_code)]
+    pub timeout_ms: u64,
+    /// Path to checkpoint file for resume support.
+    pub checkpoint_path: Option<String>,
+    /// Checkpoint save interval (number of BFS levels).
+    pub checkpoint_interval: usize,
+}
+
+impl Default for CrawlConfig {
+    fn default() -> Self {
+        Self {
+            max_depth: 3,
+            workers: 4,
+            rate_limit_ms: 500,
+            max_retries: 2,
+            obey_robots: true,
+            timeout_ms: 30_000,
+            checkpoint_path: None,
+            checkpoint_interval: 1,
+        }
+    }
+}
+
+// -- Priority queue entry: higher priority = dequeued first
+
+#[derive(Debug)]
 struct Job {
     url: Url,
     depth: usize,
+    priority: i32,
+    seq: u64,
 }
 
-/// BFS crawl from seed URL.
-///
-/// Uses rayon thread pool for parallel HTML extraction and a single
-/// Playwright bridge (mutex-guarded) for fetching. Playwright pages
-/// run concurrently inside the Node process, but the bridge protocol
-/// is sequential — this is fine because the bottleneck is network I/O
-/// inside the Node process, not the Rust→Node pipe.
-///
-/// For truly concurrent fetching, the bridge could be extended to
-/// multiplex (send N requests, collect N responses), but for typical
-/// crawl sizes (10–200 pages) the sequential approach is fast enough.
+impl PartialEq for Job {
+    fn eq(&self, other: &Self) -> bool {
+        self.seq == other.seq
+    }
+}
+impl Eq for Job {}
+
+impl PartialOrd for Job {
+    fn partial_cmp(&self, other: &Self) -> Option<CmpOrd> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Job {
+    fn cmp(&self, other: &Self) -> CmpOrd {
+        // Higher priority first, then lower seq first (FIFO within same priority)
+        self.priority
+            .cmp(&other.priority)
+            .then_with(|| other.seq.cmp(&self.seq))
+    }
+}
+
+static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn next_seq() -> u64 {
+    SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// SHA256-based URL fingerprint for deduplication.
+fn fingerprint(url: &Url) -> String {
+    let mut hasher = Sha256::new();
+    // Normalize: scheme + host + path + sorted query
+    hasher.update(url.scheme().as_bytes());
+    hasher.update(url.host_str().unwrap_or("").as_bytes());
+    hasher.update(url.path().as_bytes());
+    if let Some(q) = url.query() {
+        let mut params: Vec<&str> = q.split('&').collect();
+        params.sort();
+        for p in params {
+            hasher.update(p.as_bytes());
+        }
+    }
+    format!("{:x}", hasher.finalize())
+}
+
+/// BFS crawl with Scrapling-inspired features.
 pub fn crawl(
     pw: &mut Playwright,
     seed: &Url,
     path_prefix: &str,
-    max_depth: usize,
-    workers: usize,
-) -> Result<Vec<Page>> {
+    config: &CrawlConfig,
+) -> Result<CrawlResult> {
+    let start_time = Instant::now();
+
     let pool = ThreadPoolBuilder::new()
-        .num_threads(workers)
+        .num_threads(config.workers)
         .build()?;
 
+    let mut stats = CrawlStats::new();
     let mut visited: HashSet<String> = HashSet::new();
-    let mut queue: Vec<Job> = vec![Job {
-        url: seed.clone(),
-        depth: 0,
-    }];
+    let mut queue = BinaryHeap::new();
     let pages: Mutex<Vec<Page>> = Mutex::new(Vec::new());
 
-    visited.insert(seed.as_str().to_string());
+    // -- Attempt to resume from checkpoint
+    if let Some(ref cp_path) = config.checkpoint_path {
+        if let Ok(data) = std::fs::read_to_string(cp_path) {
+            if let Ok(cp) = serde_json::from_str::<Checkpoint>(&data) {
+                eprintln!("[imoduru] resuming from checkpoint ({} pages, {} queued)", cp.pages.len(), cp.queue.len());
+                for url_str in &cp.visited {
+                    visited.insert(url_str.clone());
+                }
+                for (url_str, depth) in &cp.queue {
+                    if let Ok(url) = Url::parse(url_str) {
+                        queue.push(Job {
+                            url,
+                            depth: *depth,
+                            priority: -((*depth) as i32),
+                            seq: next_seq(),
+                        });
+                    }
+                }
+                *pages.lock().unwrap() = cp.pages;
+                stats = cp.stats;
+            }
+        }
+    }
+
+    // Seed URL (if not resuming)
+    if visited.is_empty() {
+        let fp = fingerprint(seed);
+        visited.insert(fp);
+        queue.push(Job {
+            url: seed.clone(),
+            depth: 0,
+            priority: 0,
+            seq: next_seq(),
+        });
+    }
+
+    // -- robots.txt
+    let mut robots = RobotsManager::new("imoduru");
+    if config.obey_robots {
+        let origin = format!("{}://{}", seed.scheme(), seed.host_str().unwrap_or(""));
+        let robots_url = format!("{origin}/robots.txt");
+        match pw.fetch(&robots_url) {
+            Ok(resp) => {
+                let content = resp.html.unwrap_or_default();
+                robots.load(&origin, &content);
+                let delay = robots.crawl_delay(&origin);
+                if let Some(d) = delay {
+                    eprintln!("[imoduru] robots.txt crawl-delay: {d}s");
+                }
+                eprintln!("[imoduru] robots.txt loaded for {origin}");
+            }
+            Err(_) => {
+                eprintln!("[imoduru] robots.txt not found for {origin} (proceeding)");
+            }
+        }
+    }
+
+    let mut last_fetch = Instant::now();
+    let rate_delay = Duration::from_millis(config.rate_limit_ms);
+    let mut level_count = 0u64;
 
     while !queue.is_empty() {
-        eprintln!("[imoduru] level with {} URLs to fetch", queue.len());
+        // Drain current level
+        let mut current_level: Vec<Job> = Vec::new();
+        while let Some(job) = queue.pop() {
+            current_level.push(job);
+        }
 
-        // Fetch all URLs in current BFS level sequentially via bridge
+        eprintln!("[imoduru] level {} — {} URLs to fetch", level_count, current_level.len());
+
         let mut fetched: Vec<(Job, String, u16)> = Vec::new();
-        for job in queue.drain(..) {
-            match pw.fetch(job.url.as_str()) {
-                Ok(resp) => {
-                    let html = resp.html.unwrap_or_default();
-                    let status = resp.status.unwrap_or(0);
-                    eprintln!("  [{}] {} ({} bytes)", status, job.url, html.len());
-                    fetched.push((job, html, status));
-                }
-                Err(e) => {
-                    eprintln!("  [ERR] {} — {e}", job.url);
+        for job in current_level {
+            // robots.txt check
+            if config.obey_robots && !robots.is_allowed(&job.url) {
+                eprintln!("  [ROBOTS] {} — disallowed", job.url);
+                stats.pages_skipped_robots += 1;
+                continue;
+            }
+
+            // Rate limiting
+            let elapsed = last_fetch.elapsed();
+            if elapsed < rate_delay {
+                std::thread::sleep(rate_delay - elapsed);
+            }
+
+            // Fetch with retry
+            let mut attempts = 0;
+            loop {
+                attempts += 1;
+                match pw.fetch(job.url.as_str()) {
+                    Ok(resp) => {
+                        let html = resp.html.unwrap_or_default();
+                        let status = resp.status.unwrap_or(0);
+                        stats.total_bytes += html.len();
+                        stats.record_status(status);
+                        stats.pages_fetched += 1;
+                        if attempts > 1 {
+                            stats.pages_retried += 1;
+                        }
+                        eprintln!("  [{}] {} ({} bytes)", status, job.url, html.len());
+                        last_fetch = Instant::now();
+                        fetched.push((job, html, status));
+                        break;
+                    }
+                    Err(e) => {
+                        if attempts <= config.max_retries {
+                            eprintln!("  [RETRY {}/{}] {} — {e}", attempts, config.max_retries, job.url);
+                            std::thread::sleep(Duration::from_millis(1000 * attempts as u64));
+                            continue;
+                        }
+                        eprintln!("  [FAIL] {} — {e}", job.url);
+                        stats.pages_failed += 1;
+                        break;
+                    }
                 }
             }
         }
@@ -72,24 +246,30 @@ pub fn crawl(
                     let title = extract::extract_title(html);
                     let text = extract::extract_text(html);
                     let links = extract::extract_links(html, base, path_prefix);
+                    let pdf_links = extract::extract_pdf_links(html, base);
 
                     let page = Page {
                         url: base.to_string(),
                         title,
                         text,
+                        html: html.clone(),
                         depth: job.depth,
                         status: *status,
                         links: links.iter().map(|u| u.to_string()).collect(),
+                        pdf_links: pdf_links.iter().map(|u| u.to_string()).collect(),
                     };
 
                     pages.lock().unwrap().push(page);
 
-                    if job.depth < max_depth {
+                    if job.depth < config.max_depth {
                         let mut nl = new_links.lock().unwrap();
                         for link in links {
                             nl.push(Job {
                                 url: link,
                                 depth: job.depth + 1,
+                                // Lower priority for deeper pages
+                                priority: -((job.depth + 1) as i32),
+                                seq: next_seq(),
                             });
                         }
                     }
@@ -97,17 +277,47 @@ pub fn crawl(
             }
         });
 
-        // Deduplicate and enqueue new links
+        // Deduplicate and enqueue
         let new_links = new_links.into_inner().unwrap();
         for job in new_links {
-            let key = job.url.as_str().to_string();
-            if visited.insert(key) {
+            let fp = fingerprint(&job.url);
+            if visited.insert(fp) {
                 queue.push(job);
+            }
+        }
+
+        level_count += 1;
+
+        // Checkpoint save
+        if let Some(ref cp_path) = config.checkpoint_path {
+            if level_count % config.checkpoint_interval as u64 == 0 {
+                let queue_snapshot: Vec<(String, usize)> = queue
+                    .iter()
+                    .map(|j| (j.url.to_string(), j.depth))
+                    .collect();
+                let cp = Checkpoint {
+                    visited: visited.iter().cloned().collect(),
+                    queue: queue_snapshot,
+                    pages: pages.lock().unwrap().clone(),
+                    stats: stats.clone(),
+                };
+                let tmp = format!("{cp_path}.tmp");
+                std::fs::write(&tmp, serde_json::to_string(&cp)?)?;
+                std::fs::rename(&tmp, cp_path)?;
+                eprintln!("[imoduru] checkpoint saved");
             }
         }
     }
 
+    stats.elapsed_ms = start_time.elapsed().as_millis() as u64;
+
     let mut pages = pages.into_inner().unwrap();
     pages.sort_by(|a, b| a.url.cmp(&b.url));
-    Ok(pages)
+
+    // Clean up checkpoint on successful completion
+    if let Some(ref cp_path) = config.checkpoint_path {
+        let _ = std::fs::remove_file(cp_path);
+    }
+
+    Ok(CrawlResult { pages, stats })
 }

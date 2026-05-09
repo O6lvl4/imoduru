@@ -1,8 +1,8 @@
 [package]
 name = "imoduru"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Recursive web crawler powered by Playwright + Rust parallelism"
+description = "Recursive web crawler — pull everything like a sweet potato vine. Rust + Playwright."
 
 [dependencies]
 anyhow = "1"
@@ -12,4 +12,5 @@ scraper = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 url = { version = "2", features = ["serde"] }
-crossbeam-channel = "0.5"
+sha2 = "0.10"
+chrono = { version = "0.4", features = ["serde"] }

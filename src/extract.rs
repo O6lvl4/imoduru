@@ -35,11 +35,38 @@ pub fn extract_links(html: &str, base: &Url, path_prefix: &str) -> Vec<Url> {
     links
 }
 
-const SKIP_TAGS: &[&str] = &["script", "style", "nav", "header", "footer", "noscript", "iframe"];
+/// Extract PDF links from HTML (same origin, any path).
+pub fn extract_pdf_links(html: &str, base: &Url) -> Vec<Url> {
+    let doc = Html::parse_document(html);
+    let sel = Selector::parse("a[href]").unwrap();
+
+    let mut links = Vec::new();
+    for el in doc.select(&sel) {
+        let Some(href) = el.value().attr("href") else {
+            continue;
+        };
+
+        let Ok(resolved) = base.join(href) else {
+            continue;
+        };
+
+        if resolved.path().to_lowercase().ends_with(".pdf") {
+            links.push(resolved);
+        }
+    }
+
+    links.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+    links.dedup();
+    links
+}
+
+const SKIP_TAGS: &[&str] = &[
+    "script", "style", "nav", "header", "footer", "noscript", "iframe",
+];
 
 const BLOCK_TAGS: &[&str] = &[
-    "p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6",
-    "br", "dt", "dd", "th", "td", "section", "blockquote",
+    "p", "div", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "br", "dt", "dd", "th", "td",
+    "section", "blockquote",
 ];
 
 /// Extract readable text content from HTML, stripping nav/header/footer/script.

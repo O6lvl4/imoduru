@@ -29,9 +29,11 @@ pub struct FetchParams {
 
 #[derive(Debug, Deserialize)]
 pub struct Response {
+    #[allow(dead_code)]
     pub id: Option<u64>,
     pub ok: bool,
     pub html: Option<String>,
+    #[allow(dead_code)]
     pub url: Option<String>,
     pub status: Option<u16>,
     pub error: Option<String>,
@@ -43,10 +45,11 @@ pub struct Playwright {
     child: Child,
     stdin: std::process::ChildStdin,
     reader: BufReader<std::process::ChildStdout>,
+    pub timeout: u64,
 }
 
 impl Playwright {
-    pub fn spawn() -> Result<Self> {
+    pub fn spawn(timeout: u64) -> Result<Self> {
         let bridge_dir = Self::bridge_dir()?;
 
         let mut child = Command::new("node")
@@ -64,9 +67,9 @@ impl Playwright {
             child,
             stdin,
             reader: BufReader::new(stdout),
+            timeout,
         };
 
-        // Wait for ready signal
         let resp = pw.read_response()?;
         if !resp.ready {
             bail!("bridge did not send ready signal");
@@ -76,11 +79,9 @@ impl Playwright {
     }
 
     fn bridge_dir() -> Result<String> {
-        // Look for bridge/ relative to the executable, then fall back to compile-time path
         let exe = std::env::current_exe()?;
         let exe_dir = exe.parent().unwrap();
 
-        // dev: target/debug/../../../bridge
         for ancestor in exe_dir.ancestors() {
             let candidate = ancestor.join("bridge");
             if candidate.join("index.mjs").exists() {
@@ -107,6 +108,15 @@ impl Playwright {
     }
 
     pub fn fetch(&mut self, url: &str) -> Result<Response> {
+        self.fetch_with(url, None, None)
+    }
+
+    pub fn fetch_with(
+        &mut self,
+        url: &str,
+        wait_for: Option<&str>,
+        delay: Option<u64>,
+    ) -> Result<Response> {
         let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
         let req = Request {
             id,
@@ -114,9 +124,9 @@ impl Playwright {
             params: Some(FetchParams {
                 url: url.to_string(),
                 wait_until: None,
-                wait_for: None,
-                delay: None,
-                timeout: None,
+                wait_for: wait_for.map(|s| s.to_string()),
+                delay,
+                timeout: Some(self.timeout),
             }),
         };
         self.send_request(&req)?;
