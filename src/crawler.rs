@@ -308,7 +308,7 @@ pub fn crawl(
 
         // Checkpoint save
         if let Some(ref cp_path) = config.checkpoint_path {
-            if level_count % config.checkpoint_interval as u64 == 0 {
+            if level_count.is_multiple_of(config.checkpoint_interval as u64) {
                 let queue_snapshot: Vec<(String, usize)> =
                     queue.iter().map(|j| (j.url.to_string(), j.depth)).collect();
                 let cp = Checkpoint {
